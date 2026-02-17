@@ -12,11 +12,16 @@ import (
 // These methods enable peer-to-peer synchronization between Gas Towns.
 
 // PushTo pushes commits to a specific peer remote.
-// If credentials are stored for this peer, they are used automatically.
+// If credentials are stored for this peer, they are passed via --user flag.
 func (s *DoltStore) PushTo(ctx context.Context, peer string) error {
 	return s.withPeerCredentials(ctx, peer, func() error {
-		// DOLT_PUSH(remote, branch)
-		_, err := s.execContext(ctx, "CALL DOLT_PUSH(?, ?)", peer, s.branch)
+		username := s.getPeerUsername(ctx, peer)
+		var err error
+		if username != "" {
+			_, err = s.execContext(ctx, "CALL DOLT_PUSH('--user', ?, ?, ?)", username, peer, s.branch)
+		} else {
+			_, err = s.execContext(ctx, "CALL DOLT_PUSH(?, ?)", peer, s.branch)
+		}
 		if err != nil {
 			return fmt.Errorf("failed to push to peer %s: %w", peer, err)
 		}
@@ -30,8 +35,13 @@ func (s *DoltStore) PushTo(ctx context.Context, peer string) error {
 func (s *DoltStore) PullFrom(ctx context.Context, peer string) ([]storage.Conflict, error) {
 	var conflicts []storage.Conflict
 	err := s.withPeerCredentials(ctx, peer, func() error {
-		// DOLT_PULL(remote) - pulls and merges
-		_, pullErr := s.execContext(ctx, "CALL DOLT_PULL(?)", peer)
+		username := s.getPeerUsername(ctx, peer)
+		var pullErr error
+		if username != "" {
+			_, pullErr = s.execContext(ctx, "CALL DOLT_PULL('--user', ?, ?)", username, peer)
+		} else {
+			_, pullErr = s.execContext(ctx, "CALL DOLT_PULL(?)", peer)
+		}
 		if pullErr != nil {
 			// Check if the error is due to merge conflicts
 			c, conflictErr := s.GetConflicts(ctx)
@@ -50,13 +60,27 @@ func (s *DoltStore) PullFrom(ctx context.Context, peer string) ([]storage.Confli
 // If credentials are stored for this peer, they are used automatically.
 func (s *DoltStore) Fetch(ctx context.Context, peer string) error {
 	return s.withPeerCredentials(ctx, peer, func() error {
-		// DOLT_FETCH(remote)
-		_, err := s.execContext(ctx, "CALL DOLT_FETCH(?)", peer)
+		username := s.getPeerUsername(ctx, peer)
+		var err error
+		if username != "" {
+			_, err = s.execContext(ctx, "CALL DOLT_FETCH('--user', ?, ?)", username, peer)
+		} else {
+			_, err = s.execContext(ctx, "CALL DOLT_FETCH(?)", peer)
+		}
 		if err != nil {
 			return fmt.Errorf("failed to fetch from peer %s: %w", peer, err)
 		}
 		return nil
 	})
+}
+
+// getPeerUsername returns the stored username for a federation peer, or "" if none.
+func (s *DoltStore) getPeerUsername(ctx context.Context, peerName string) string {
+	peer, err := s.GetFederationPeer(ctx, peerName)
+	if err != nil || peer == nil {
+		return ""
+	}
+	return peer.Username
 }
 
 // ListRemotes returns configured remote names and URLs.
@@ -166,6 +190,13 @@ func (s *DoltStore) Sync(ctx context.Context, peer string, strategy string) (*Sy
 		return result, result.Error
 	}
 	result.Fetched = true
+
+	// Commit any working changes (e.g., federation_peers.last_sync update)
+	// so they don't block the merge step.
+	if err := s.Commit(ctx, fmt.Sprintf("Pre-merge commit for federation sync with %s", peer)); err != nil {
+		// Ignore commit errors (e.g., nothing to commit)
+		_ = err
+	}
 
 	// Step 2: Get status before merge
 	beforeCommit, _ := s.GetCurrentCommit(ctx) // Best effort: empty commit hash means diff won't be logged
