@@ -104,6 +104,52 @@ var readOnlyCommands = map[string]bool{
 	// NOTE: "export" is NOT read-only - it writes to clear dirty issues and update jsonl_file_hash
 }
 
+// noDBCommands are root-level commands that should skip DB initialization.
+// Subcommands with the same leaf name under other parents (e.g. federation sync)
+// must not match this list.
+var noDBCommands = []string{
+	"__complete",       // Cobra's internal completion command (shell completions work without db)
+	"__completeNoDesc", // Cobra's completion without descriptions (used by fish)
+	"bash",
+	"completion",
+	"doctor",
+	"fish",
+	"help",
+	"hook", // manages its own store lifecycle; double-open deadlocks embedded Dolt (#1719)
+	"hooks",
+	"human",
+	"init",
+	"merge",
+	"migrate", // manages its own store lifecycle; double-open deadlocks embedded Dolt (#1668)
+	"onboard",
+	"powershell",
+	"prime",
+	"quickstart",
+	"resolve-conflicts",
+	"setup",
+	"sync", // top-level no-op command; skip DB init to avoid Dolt lock conflict when spawned from hook
+	"version",
+	"zsh",
+}
+
+// shouldSkipDBInitForCommand determines whether PersistentPreRun should return
+// before opening the store.
+func shouldSkipDBInitForCommand(cmd *cobra.Command, noDbCommands []string) bool {
+	if cmd == nil {
+		return false
+	}
+
+	parent := cmd.Parent()
+	if parent != nil {
+		if slices.Contains(noDbCommands, parent.Name()) {
+			return true
+		}
+	}
+
+	// Root-level commands have parent=root and root has no parent.
+	return parent != nil && parent.Parent() == nil && slices.Contains(noDbCommands, cmd.Name())
+}
+
 // isReadOnlyCommand returns true if the command only reads from the database.
 // This is used to open SQLite in read-only mode, preventing file modifications
 // that would trigger file watchers. See GH#804.
@@ -313,44 +359,13 @@ var rootCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		// GH#1093: Check noDbCommands BEFORE expensive operations (ensureForkProtection,
+		// GH#1093: Check noDBCommands BEFORE expensive operations (ensureForkProtection,
 		// signalOrchestratorActivity) to avoid spawning git subprocesses for simple commands
 		// like "bd version" that don't need database access.
-		noDbCommands := []string{
-			"__complete",       // Cobra's internal completion command (shell completions work without db)
-			"__completeNoDesc", // Cobra's completion without descriptions (used by fish)
-			"bash",
-			"completion",
-			"doctor",
-			"fish",
-			"help",
-			"hook", // manages its own store lifecycle; double-open deadlocks embedded Dolt (#1719)
-			"hooks",
-			"human",
-			"init",
-			"merge",
-			"migrate", // manages its own store lifecycle; double-open deadlocks embedded Dolt (#1668)
-			"onboard",
-			"powershell",
-			"prime",
-			"quickstart",
-			"resolve-conflicts",
-			"setup",
-			"sync",    // no-op command; skip DB init to avoid Dolt lock conflict when spawned from hook
-			"version",
-			"zsh",
-		}
-		// Check both the command name and parent command name for subcommands
-		cmdName := cmd.Name()
-		if cmd.Parent() != nil {
-			parentName := cmd.Parent().Name()
-			if slices.Contains(noDbCommands, parentName) {
-				return
-			}
-		}
-		if slices.Contains(noDbCommands, cmdName) {
+		if shouldSkipDBInitForCommand(cmd, noDBCommands) {
 			return
 		}
+		cmdName := cmd.Name()
 
 		// Skip for root command with no subcommand (just shows help)
 		if cmd.Parent() == nil && cmdName == cmd.Use {
