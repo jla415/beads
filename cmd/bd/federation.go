@@ -202,8 +202,12 @@ func runFederationSync(cmd *cobra.Command, args []string) {
 			}
 			if len(result.Conflicts) > 0 {
 				if result.ConflictsResolved {
+					displayStrategy := federationStrategy
+					if displayStrategy == "" {
+						displayStrategy = "ours (auto: metadata-only)"
+					}
 					fmt.Printf("  %s Resolved %d conflicts using %s strategy\n",
-						ui.RenderPass("✓"), len(result.Conflicts), federationStrategy)
+						ui.RenderPass("✓"), len(result.Conflicts), displayStrategy)
 				} else {
 					fmt.Printf("  %s %d conflicts need resolution\n",
 						ui.RenderWarn("⚠"), len(result.Conflicts))
