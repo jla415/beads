@@ -336,6 +336,7 @@ var rootCmd = &cobra.Command{
 			"quickstart",
 			"resolve-conflicts",
 			"setup",
+			"sync",    // no-op command; skip DB init to avoid Dolt lock conflict when spawned from hook
 			"version",
 			"zsh",
 		}
