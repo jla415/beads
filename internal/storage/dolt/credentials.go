@@ -300,14 +300,7 @@ func (s *DoltStore) withPeerCredentials(ctx context.Context, peerName string, fn
 	}
 
 	// Execute the function
-	err = fn()
-
-	// Update last sync time on success
-	if err == nil && peer != nil {
-		_ = s.updatePeerLastSync(ctx, peerName) // Best effort: peer sync timestamp is advisory
-	}
-
-	return err
+	return fn()
 }
 
 // FederationPeer is an alias for storage.FederationPeer for convenience.

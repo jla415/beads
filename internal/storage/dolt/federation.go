@@ -241,8 +241,11 @@ func (s *DoltStore) Sync(ctx context.Context, peer string, strategy string) (*Sy
 		result.Pushed = true
 	}
 
-	// Record last sync time
-	_ = s.setLastSyncTime(ctx, peer) // Best effort: sync timestamp is advisory for scheduling
+	// Record last sync time only when actual work was done
+	if result.PulledCommits > 0 || result.ConflictsResolved {
+		_ = s.setLastSyncTime(ctx, peer)
+		_ = s.updatePeerLastSync(ctx, peer)
+	}
 
 	result.EndTime = time.Now()
 	return result, nil
