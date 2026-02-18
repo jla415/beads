@@ -5,6 +5,7 @@ package dolt
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/steveyegge/beads/internal/storage"
@@ -205,34 +206,22 @@ func (s *DoltStore) Sync(ctx context.Context, peer string, strategy string) (*Sy
 
 	// Step 3: Merge peer's branch
 	remoteBranch := fmt.Sprintf("%s/%s", peer, s.branch)
-	conflicts, err := s.Merge(ctx, remoteBranch)
+	_, err := s.Merge(ctx, remoteBranch)
 	if err != nil {
-		result.Error = fmt.Errorf("merge failed: %w", err)
-		return result, result.Error
-	}
-
-	// Step 4: Handle conflicts if any
-	if len(conflicts) > 0 {
-		result.Conflicts = conflicts
-
-		if strategy == "" {
-			// No strategy specified, leave conflicts for manual resolution
-			result.Error = fmt.Errorf("merge conflicts require resolution (use --strategy ours|theirs)")
-			return result, result.Error
-		}
-
-		// Auto-resolve using strategy
-		for _, c := range conflicts {
-			if err := s.ResolveConflicts(ctx, c.Field, strategy); err != nil {
-				result.Error = fmt.Errorf("conflict resolution failed for %s: %w", c.Field, err)
+		// With autocommit ON, dolt rolls back on conflict, wiping dolt_conflicts.
+		// Handle merge+resolve+commit in a single autocommit=0 transaction so the
+		// result is a proper merge commit with both branches as ancestors.
+		if strings.Contains(err.Error(), "Merge conflict detected") {
+			resolved, resolveErr := s.mergeAndResolve(ctx, remoteBranch, strategy)
+			if resolveErr != nil {
+				result.Conflicts = resolved
+				result.Error = resolveErr
 				return result, result.Error
 			}
-		}
-		result.ConflictsResolved = true
-
-		// Commit the resolution
-		if err := s.Commit(ctx, fmt.Sprintf("Resolve conflicts from %s using %s strategy", peer, strategy)); err != nil {
-			result.Error = fmt.Errorf("failed to commit conflict resolution: %w", err)
+			result.Conflicts = resolved
+			result.ConflictsResolved = true
+		} else {
+			result.Error = fmt.Errorf("merge failed: %w", err)
 			return result, result.Error
 		}
 	}

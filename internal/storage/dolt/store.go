@@ -889,6 +889,53 @@ func (s *DoltStore) Merge(ctx context.Context, branch string) ([]storage.Conflic
 	return nil, nil
 }
 
+// mergeAndResolve handles merge conflicts in a single autocommit=0 transaction.
+// With autocommit ON (dolt default), DOLT_MERGE rolls back on conflict, wiping
+// dolt_conflicts. This method retries with autocommit OFF so conflicts persist
+// for resolution, then resolves and commits within the same transaction to
+// produce a proper merge commit with both branches as ancestors.
+func (s *DoltStore) mergeAndResolve(ctx context.Context, branch, strategy string) ([]storage.Conflict, error) {
+	if _, err := s.db.ExecContext(ctx, "SET @@autocommit = 0"); err != nil {
+		return nil, fmt.Errorf("failed to disable autocommit: %w", err)
+	}
+	defer s.db.ExecContext(ctx, "SET @@autocommit = 1") //nolint:errcheck
+
+	// Re-attempt merge; error is expected since we know there are conflicts.
+	_, _ = s.db.ExecContext(ctx, "CALL DOLT_MERGE('--author', ?, ?)", s.commitAuthorString(), branch)
+
+	conflicts, err := s.GetConflicts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get conflicts: %w", err)
+	}
+	if len(conflicts) == 0 {
+		return nil, fmt.Errorf("failed to merge branch %s: conflict detected but no conflicts found", branch)
+	}
+
+	if strategy == "" {
+		// No strategy — reset merge state and report conflicts.
+		_, _ = s.db.ExecContext(ctx, "CALL DOLT_MERGE('--abort')")
+		return conflicts, fmt.Errorf("merge conflicts require resolution (use --strategy ours|theirs)")
+	}
+
+	// Resolve all conflicts within the same transaction.
+	for _, c := range conflicts {
+		if err := s.ResolveConflicts(ctx, c.Field, strategy); err != nil {
+			return conflicts, fmt.Errorf("conflict resolution failed for %s: %w", c.Field, err)
+		}
+	}
+
+	// Commit within the transaction to create a proper merge commit.
+	msg := fmt.Sprintf("Merge %s (resolved with %s strategy)", branch, strategy)
+	if err := s.Commit(ctx, msg); err != nil {
+		// "nothing to commit" is expected when ours strategy keeps local state unchanged.
+		if !strings.Contains(err.Error(), "nothing to commit") {
+			return conflicts, fmt.Errorf("failed to commit resolution: %w", err)
+		}
+	}
+
+	return conflicts, nil
+}
+
 // CurrentBranch returns the current branch name
 func (s *DoltStore) CurrentBranch(ctx context.Context) (string, error) {
 	var branch string
