@@ -194,7 +194,7 @@ func (s *DoltStore) Sync(ctx context.Context, peer string, strategy string) (*Sy
 	}
 	result.Fetched = true
 
-	// Commit any working changes (e.g., federation_peers.last_sync update)
+	// Commit any working changes before merge.
 	// so they don't block the merge step.
 	if err := s.Commit(ctx, fmt.Sprintf("Pre-merge commit for federation sync with %s", peer)); err != nil {
 		// Ignore commit errors (e.g., nothing to commit)

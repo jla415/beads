@@ -5,7 +5,7 @@ package dolt
 // currentSchemaVersion is bumped whenever the schema or migrations change.
 // initSchemaOnDB checks this against the stored version and skips re-initialization
 // when they match, avoiding ~20 DDL statements per bd invocation.
-const currentSchemaVersion = 3
+const currentSchemaVersion = 4
 
 // schema defines the MySQL-compatible database schema for Dolt.
 // This mirrors the SQLite schema but uses MySQL syntax.
@@ -230,7 +230,8 @@ CREATE TABLE IF NOT EXISTS interactions (
 );
 
 -- Federation peers table (for SQL user authentication)
--- Stores credentials for peer-to-peer Dolt remotes between Gas Towns
+-- Shared peer metadata replicated across machines.
+-- Legacy credential columns are kept for backward compatibility.
 CREATE TABLE IF NOT EXISTS federation_peers (
     name VARCHAR(255) PRIMARY KEY,
     remote_url VARCHAR(1024) NOT NULL,
@@ -241,6 +242,22 @@ CREATE TABLE IF NOT EXISTS federation_peers (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_federation_peers_sovereignty (sovereignty)
+);
+
+-- Machine-scoped federation auth rows.
+-- Credentials and per-machine remote URLs live here so cross-machine syncs
+-- cannot overwrite encrypted blobs with different local encryption keys.
+CREATE TABLE IF NOT EXISTS federation_peer_auth (
+    peer_name VARCHAR(255) NOT NULL,
+    machine_id VARCHAR(64) NOT NULL,
+    remote_url VARCHAR(1024) NOT NULL,
+    username VARCHAR(255),
+    password_encrypted BLOB,
+    last_sync DATETIME,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (peer_name, machine_id),
+    INDEX idx_federation_peer_auth_machine (machine_id)
 );
 `
 
