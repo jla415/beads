@@ -895,6 +895,14 @@ func (s *DoltStore) Merge(ctx context.Context, branch string) ([]storage.Conflic
 	return nil, nil
 }
 
+// autoResolveOursTables lists tables with per-machine state that can safely
+// auto-resolve with "ours" strategy. These store timestamps that differ per
+// machine, causing conflicts on every cross-machine sync.
+var autoResolveOursTables = map[string]bool{
+	"federation_peers": true,
+	"metadata":         true,
+}
+
 // mergeAndResolve handles merge conflicts in a single autocommit=0 transaction.
 // With autocommit ON (dolt default), DOLT_MERGE rolls back on conflict, wiping
 // dolt_conflicts. This method retries with autocommit OFF so conflicts persist
@@ -918,9 +926,21 @@ func (s *DoltStore) mergeAndResolve(ctx context.Context, branch, strategy string
 	}
 
 	if strategy == "" {
-		// No strategy — reset merge state and report conflicts.
-		_, _ = s.db.ExecContext(ctx, "CALL DOLT_MERGE('--abort')")
-		return conflicts, fmt.Errorf("merge conflicts require resolution (use --strategy ours|theirs)")
+		// Auto-resolve if all conflicts are in per-machine metadata tables.
+		// federation_peers and metadata store timestamps that differ per machine,
+		// so cross-machine syncs always conflict on these. Safe to keep local.
+		allMetadata := true
+		for _, c := range conflicts {
+			if !autoResolveOursTables[c.Field] {
+				allMetadata = false
+				break
+			}
+		}
+		if !allMetadata {
+			_, _ = s.db.ExecContext(ctx, "CALL DOLT_MERGE('--abort')")
+			return conflicts, fmt.Errorf("merge conflicts require resolution (use --strategy ours|theirs)")
+		}
+		strategy = "ours"
 	}
 
 	// Resolve all conflicts within the same transaction.
