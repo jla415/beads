@@ -899,8 +899,9 @@ func (s *DoltStore) Merge(ctx context.Context, branch string) ([]storage.Conflic
 // auto-resolve with "ours" strategy. These store timestamps that differ per
 // machine, causing conflicts on every cross-machine sync.
 var autoResolveOursTables = map[string]bool{
-	"federation_peers": true,
-	"metadata":         true,
+	"federation_peers":     true,
+	"federation_peer_auth": true,
+	"metadata":             true,
 }
 
 // mergeAndResolve handles merge conflicts in a single autocommit=0 transaction.
@@ -927,8 +928,8 @@ func (s *DoltStore) mergeAndResolve(ctx context.Context, branch, strategy string
 
 	if strategy == "" {
 		// Auto-resolve if all conflicts are in per-machine metadata tables.
-		// federation_peers and metadata store timestamps that differ per machine,
-		// so cross-machine syncs always conflict on these. Safe to keep local.
+		// federation_* and metadata store machine-scoped values (timestamps,
+		// local auth rows, local URLs), so keeping local state is safe.
 		allMetadata := true
 		for _, c := range conflicts {
 			if !autoResolveOursTables[c.Field] {

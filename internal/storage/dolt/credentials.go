@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -50,6 +51,65 @@ func (s *DoltStore) encryptionKey() []byte {
 	h := sha256.New()
 	h.Write([]byte(s.dbPath + "beads-federation-key-v1"))
 	return h.Sum(nil)
+}
+
+// federationMachineID returns a deterministic machine identifier for this
+// local store path. Credentials are keyed by this value so peer auth rows
+// are machine-scoped and do not overwrite each other across synced databases.
+func (s *DoltStore) federationMachineID() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown-host"
+	}
+
+	dbPath := s.dbPath
+	if absPath, err := filepath.Abs(dbPath); err == nil {
+		dbPath = absPath
+	}
+
+	h := sha256.New()
+	h.Write([]byte(host))
+	h.Write([]byte("|"))
+	h.Write([]byte(dbPath))
+	h.Write([]byte("|beads-federation-machine-v1"))
+	sum := h.Sum(nil)
+	return fmt.Sprintf("m-%x", sum[:16])
+}
+
+func (s *DoltStore) decryptPasswordBestEffort(encrypted []byte) (string, bool) {
+	if len(encrypted) == 0 {
+		return "", true
+	}
+
+	password, err := s.decryptPassword(encrypted)
+	if err != nil {
+		return "", false
+	}
+	return password, true
+}
+
+func (s *DoltStore) upsertFederationPeerAuth(
+	ctx context.Context,
+	peerName string,
+	remoteURL string,
+	username string,
+	encryptedPwd []byte,
+) error {
+	var usernameValue any
+	if username != "" {
+		usernameValue = username
+	}
+
+	_, err := s.execContext(ctx, `
+		INSERT INTO federation_peer_auth (peer_name, machine_id, remote_url, username, password_encrypted)
+		VALUES (?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			remote_url = VALUES(remote_url),
+			username = VALUES(username),
+			password_encrypted = VALUES(password_encrypted),
+			updated_at = CURRENT_TIMESTAMP
+	`, peerName, s.federationMachineID(), remoteURL, usernameValue, encryptedPwd)
+	return err
 }
 
 // encryptPassword encrypts a password using AES-GCM
@@ -114,6 +174,9 @@ func (s *DoltStore) AddFederationPeer(ctx context.Context, peer *storage.Federat
 	if err := validatePeerName(peer.Name); err != nil {
 		return fmt.Errorf("invalid peer name: %w", err)
 	}
+	if strings.TrimSpace(peer.RemoteURL) == "" {
+		return fmt.Errorf("remote URL cannot be empty")
+	}
 
 	// Encrypt password before storing
 	var encryptedPwd []byte
@@ -125,20 +188,23 @@ func (s *DoltStore) AddFederationPeer(ctx context.Context, peer *storage.Federat
 		}
 	}
 
-	// Upsert the peer credentials
+	// Upsert shared peer metadata.
+	// Credentials and machine-specific URLs are stored in federation_peer_auth.
 	_, err = s.execContext(ctx, `
-		INSERT INTO federation_peers (name, remote_url, username, password_encrypted, sovereignty)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO federation_peers (name, remote_url, sovereignty)
+		VALUES (?, ?, ?)
 		ON DUPLICATE KEY UPDATE
-			remote_url = VALUES(remote_url),
-			username = VALUES(username),
-			password_encrypted = VALUES(password_encrypted),
 			sovereignty = VALUES(sovereignty),
 			updated_at = CURRENT_TIMESTAMP
-	`, peer.Name, peer.RemoteURL, peer.Username, encryptedPwd, peer.Sovereignty)
+	`, peer.Name, peer.RemoteURL, peer.Sovereignty)
 
 	if err != nil {
 		return fmt.Errorf("failed to add federation peer: %w", err)
+	}
+
+	// Persist machine-scoped auth/URL for this local store.
+	if err := s.upsertFederationPeerAuth(ctx, peer.Name, peer.RemoteURL, peer.Username, encryptedPwd); err != nil {
+		return fmt.Errorf("failed to store peer credentials: %w", err)
 	}
 
 	// Also add the Dolt remote
@@ -156,14 +222,47 @@ func (s *DoltStore) AddFederationPeer(ctx context.Context, peer *storage.Federat
 // Returns storage.ErrNotFound (wrapped) if the peer does not exist.
 func (s *DoltStore) GetFederationPeer(ctx context.Context, name string) (*storage.FederationPeer, error) {
 	var peer storage.FederationPeer
-	var encryptedPwd []byte
-	var lastSync sql.NullTime
-	var username sql.NullString
+	var sharedRemoteURL string
+	var sharedUsername sql.NullString
+	var sharedEncryptedPwd []byte
+	var sharedLastSync sql.NullTime
+	var localRemoteURL sql.NullString
+	var localUsername sql.NullString
+	var localEncryptedPwd []byte
+	var localLastSync sql.NullTime
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT name, remote_url, username, password_encrypted, sovereignty, last_sync, created_at, updated_at
-		FROM federation_peers WHERE name = ?
-	`, name).Scan(&peer.Name, &peer.RemoteURL, &username, &encryptedPwd, &peer.Sovereignty, &lastSync, &peer.CreatedAt, &peer.UpdatedAt)
+		SELECT
+			p.name,
+			p.remote_url,
+			p.username,
+			p.password_encrypted,
+			p.sovereignty,
+			p.last_sync,
+			p.created_at,
+			p.updated_at,
+			a.remote_url,
+			a.username,
+			a.password_encrypted,
+			a.last_sync
+		FROM federation_peers p
+		LEFT JOIN federation_peer_auth a
+			ON a.peer_name = p.name AND a.machine_id = ?
+		WHERE p.name = ?
+	`, s.federationMachineID(), name).Scan(
+		&peer.Name,
+		&sharedRemoteURL,
+		&sharedUsername,
+		&sharedEncryptedPwd,
+		&peer.Sovereignty,
+		&sharedLastSync,
+		&peer.CreatedAt,
+		&peer.UpdatedAt,
+		&localRemoteURL,
+		&localUsername,
+		&localEncryptedPwd,
+		&localLastSync,
+	)
 
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("%w: federation peer %s", storage.ErrNotFound, name)
@@ -172,18 +271,37 @@ func (s *DoltStore) GetFederationPeer(ctx context.Context, name string) (*storag
 		return nil, fmt.Errorf("failed to get federation peer: %w", err)
 	}
 
-	if username.Valid {
-		peer.Username = username.String
-	}
-	if lastSync.Valid {
-		peer.LastSync = &lastSync.Time
+	peer.RemoteURL = sharedRemoteURL
+	localAuthExists := localRemoteURL.Valid
+	if localRemoteURL.Valid && localRemoteURL.String != "" {
+		peer.RemoteURL = localRemoteURL.String
 	}
 
-	// Decrypt password
-	if len(encryptedPwd) > 0 {
-		peer.Password, err = s.decryptPassword(encryptedPwd)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decrypt password: %w", err)
+	if localUsername.Valid {
+		peer.Username = localUsername.String
+	} else if sharedUsername.Valid {
+		peer.Username = sharedUsername.String
+	}
+
+	if localLastSync.Valid {
+		peer.LastSync = &localLastSync.Time
+	} else if sharedLastSync.Valid {
+		peer.LastSync = &sharedLastSync.Time
+	}
+
+	if localAuthExists {
+		if password, ok := s.decryptPasswordBestEffort(localEncryptedPwd); ok {
+			peer.Password = password
+		}
+		return &peer, nil
+	}
+
+	// Legacy fallback for existing rows that still store credentials in
+	// federation_peers. If decrypt succeeds, backfill machine-scoped auth.
+	if password, ok := s.decryptPasswordBestEffort(sharedEncryptedPwd); ok {
+		peer.Password = password
+		if sharedUsername.Valid || len(sharedEncryptedPwd) > 0 {
+			_ = s.upsertFederationPeerAuth(ctx, peer.Name, peer.RemoteURL, peer.Username, sharedEncryptedPwd)
 		}
 	}
 
@@ -193,9 +311,24 @@ func (s *DoltStore) GetFederationPeer(ctx context.Context, name string) (*storag
 // ListFederationPeers returns all configured federation peers.
 func (s *DoltStore) ListFederationPeers(ctx context.Context) ([]*storage.FederationPeer, error) {
 	rows, err := s.queryContext(ctx, `
-		SELECT name, remote_url, username, password_encrypted, sovereignty, last_sync, created_at, updated_at
-		FROM federation_peers ORDER BY name
-	`)
+		SELECT
+			p.name,
+			p.remote_url,
+			p.username,
+			p.password_encrypted,
+			p.sovereignty,
+			p.last_sync,
+			p.created_at,
+			p.updated_at,
+			a.remote_url,
+			a.username,
+			a.password_encrypted,
+			a.last_sync
+		FROM federation_peers p
+		LEFT JOIN federation_peer_auth a
+			ON a.peer_name = p.name AND a.machine_id = ?
+		ORDER BY p.name
+	`, s.federationMachineID())
 	if err != nil {
 		return nil, fmt.Errorf("failed to list federation peers: %w", err)
 	}
@@ -204,27 +337,56 @@ func (s *DoltStore) ListFederationPeers(ctx context.Context) ([]*storage.Federat
 	var peers []*storage.FederationPeer
 	for rows.Next() {
 		var peer storage.FederationPeer
-		var encryptedPwd []byte
-		var lastSync sql.NullTime
-		var username sql.NullString
+		var sharedRemoteURL string
+		var sharedUsername sql.NullString
+		var sharedEncryptedPwd []byte
+		var sharedLastSync sql.NullTime
+		var localRemoteURL sql.NullString
+		var localUsername sql.NullString
+		var localEncryptedPwd []byte
+		var localLastSync sql.NullTime
 
-		if err := rows.Scan(&peer.Name, &peer.RemoteURL, &username, &encryptedPwd, &peer.Sovereignty, &lastSync, &peer.CreatedAt, &peer.UpdatedAt); err != nil {
+		if err := rows.Scan(
+			&peer.Name,
+			&sharedRemoteURL,
+			&sharedUsername,
+			&sharedEncryptedPwd,
+			&peer.Sovereignty,
+			&sharedLastSync,
+			&peer.CreatedAt,
+			&peer.UpdatedAt,
+			&localRemoteURL,
+			&localUsername,
+			&localEncryptedPwd,
+			&localLastSync,
+		); err != nil {
 			return nil, fmt.Errorf("failed to scan federation peer: %w", err)
 		}
 
-		if username.Valid {
-			peer.Username = username.String
-		}
-		if lastSync.Valid {
-			peer.LastSync = &lastSync.Time
+		localAuthExists := localRemoteURL.Valid
+		peer.RemoteURL = sharedRemoteURL
+		if localRemoteURL.Valid && localRemoteURL.String != "" {
+			peer.RemoteURL = localRemoteURL.String
 		}
 
-		// Decrypt password
-		if len(encryptedPwd) > 0 {
-			peer.Password, err = s.decryptPassword(encryptedPwd)
-			if err != nil {
-				return nil, fmt.Errorf("failed to decrypt password: %w", err)
+		if localUsername.Valid {
+			peer.Username = localUsername.String
+		} else if sharedUsername.Valid {
+			peer.Username = sharedUsername.String
+		}
+
+		if localLastSync.Valid {
+			peer.LastSync = &localLastSync.Time
+		} else if sharedLastSync.Valid {
+			peer.LastSync = &sharedLastSync.Time
+		}
+
+		if localAuthExists {
+			if password, ok := s.decryptPasswordBestEffort(localEncryptedPwd); ok {
+				peer.Password = password
 			}
+		} else if password, ok := s.decryptPasswordBestEffort(sharedEncryptedPwd); ok {
+			peer.Password = password
 		}
 
 		peers = append(peers, &peer)
@@ -235,6 +397,10 @@ func (s *DoltStore) ListFederationPeers(ctx context.Context) ([]*storage.Federat
 
 // RemoveFederationPeer removes a federation peer and its credentials.
 func (s *DoltStore) RemoveFederationPeer(ctx context.Context, name string) error {
+	if _, err := s.execContext(ctx, "DELETE FROM federation_peer_auth WHERE peer_name = ?", name); err != nil {
+		return fmt.Errorf("failed to remove federation peer auth: %w", err)
+	}
+
 	result, err := s.execContext(ctx, "DELETE FROM federation_peers WHERE name = ?", name)
 	if err != nil {
 		return fmt.Errorf("failed to remove federation peer: %w", err)
@@ -254,7 +420,11 @@ func (s *DoltStore) RemoveFederationPeer(ctx context.Context, name string) error
 
 // updatePeerLastSync updates the last sync time for a peer.
 func (s *DoltStore) updatePeerLastSync(ctx context.Context, name string) error {
-	_, err := s.execContext(ctx, "UPDATE federation_peers SET last_sync = CURRENT_TIMESTAMP WHERE name = ?", name)
+	_, err := s.execContext(ctx, `
+		UPDATE federation_peer_auth
+		SET last_sync = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		WHERE peer_name = ? AND machine_id = ?
+	`, name, s.federationMachineID())
 	return err
 }
 
