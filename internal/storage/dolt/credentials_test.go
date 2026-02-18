@@ -4,6 +4,7 @@ package dolt
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 )
 
@@ -155,5 +156,29 @@ func TestUpdatePeerLastSyncIsMachineScoped(t *testing.T) {
 	}
 	if sharedLastSync.Valid {
 		t.Fatal("expected shared federation_peers.last_sync to remain unset")
+	}
+}
+
+func TestWithPeerCredentialsRejectsMissingPassword(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	_, err := store.execContext(ctx, `
+		INSERT INTO federation_peers (name, remote_url, username, sovereignty)
+		VALUES (?, ?, ?, ?)
+	`, "hub", "http://beads-hub:50051/beads", "beads_sync", "T2")
+	if err != nil {
+		t.Fatalf("failed to seed shared peer row: %v", err)
+	}
+
+	err = store.withPeerCredentials(ctx, "hub", func() error { return nil })
+	if err == nil {
+		t.Fatal("expected error for missing local password")
+	}
+	if got := err.Error(); !strings.Contains(got, "no local password") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -459,8 +459,15 @@ func (s *DoltStore) withPeerCredentials(ctx context.Context, peerName string, fn
 		return fmt.Errorf("failed to get peer credentials: %w", err)
 	}
 
+	if peer != nil && peer.Username != "" && peer.Password == "" {
+		return fmt.Errorf(
+			"peer %s has username %q but no local password; run 'bd federation add-peer %s <url> --user %s --password <password>' on this machine",
+			peerName, peer.Username, peerName, peer.Username,
+		)
+	}
+
 	// If we have credentials, set env vars with mutex protection
-	if peer != nil && (peer.Username != "" || peer.Password != "") {
+	if peer != nil && peer.Username != "" && peer.Password != "" {
 		federationEnvMutex.Lock()
 		cleanup := setFederationCredentials(peer.Username, peer.Password)
 		defer func() {

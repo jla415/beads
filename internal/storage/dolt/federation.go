@@ -83,6 +83,9 @@ func (s *DoltStore) getPeerUsername(ctx context.Context, peerName string) string
 	if err != nil || peer == nil {
 		return ""
 	}
+	if peer.Username == "" || peer.Password == "" {
+		return ""
+	}
 	return peer.Username
 }
 
