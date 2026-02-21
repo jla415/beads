@@ -239,12 +239,14 @@ Examples:
 			// Release any Dolt locks left by diagnostics before applying fixes.
 			releaseDiagnosticLocks(absPath)
 			applyFixes(result)
-			// Note: we intentionally do NOT re-run diagnostics here.
-			// The embedded Dolt driver is a process-level singleton; if any
-			// Close() timed out during the first diagnostic pass, the leaked
-			// goroutine holds internal noms locks and a second open will
-			// deadlock. Users should run 'bd doctor' again to verify fixes.
+			// Clean up locks created by the diagnostic phase's Dolt opens
+			// (e.g., federation checks that panic leave noms LOCK files).
+			releaseDiagnosticLocks(absPath)
 			fmt.Println("\nRun 'bd doctor' again to verify fixes.")
+			if !result.OverallOK {
+				os.Exit(1)
+			}
+			return
 		}
 
 		// Add timestamp and platform info for export
@@ -324,6 +326,11 @@ func releaseDiagnosticLocks(path string) {
 		if _, err := os.Stat(nomsLock); err == nil {
 			_ = os.Remove(nomsLock)
 		}
+	}
+	// Also clean stale dolt-access.lock (advisory flock file in .beads/).
+	accessLock := filepath.Join(beadsDir, "dolt-access.lock")
+	if info, err := os.Stat(accessLock); err == nil && info.Size() == 0 {
+		_ = os.Remove(accessLock)
 	}
 }
 
@@ -455,38 +462,60 @@ func runDiagnostics(path string) doctorResult {
 		result.OverallOK = false
 	}
 
+	// Clean noms LOCK files left by earlier checks (database version, schema,
+	// integrity) that opened the embedded Dolt driver and panicked. Without
+	// this, CheckLockHealth below would report false positives from doctor's
+	// own diagnostic phase.
+	releaseDiagnosticLocks(path)
+
 	// Dolt health checks (connection, schema, sync, status via AccessLock)
-	// Run BEFORE federation checks: federation opens Dolt connections that may
-	// leave noms LOCK files on disk. CheckLockHealth (inside RunDoltHealthChecks)
-	// must run first to avoid false positives from doctor's own connections (#1925).
 	for _, dc := range doctor.RunDoltHealthChecks(path) {
 		result.Checks = append(result.Checks, convertDoctorCheck(dc))
 	}
 
+	// Clean locks again before federation probe — RunDoltHealthChecks may
+	// have panicked and left new LOCK files.
+	releaseDiagnosticLocks(path)
+
 	// Federation health checks (bd-wkumz.6)
-	// Check 8d: Federation remotesapi port accessibility
-	remotesAPICheck := convertWithCategory(doctor.CheckFederationRemotesAPI(path), doctor.CategoryFederation)
-	result.Checks = append(result.Checks, remotesAPICheck)
-	// Don't fail overall for federation issues - they're only relevant for Dolt users
+	// Probe Dolt before running federation checks: each check opens its own
+	// connection, and if the first one panics it leaves noms LOCK files that
+	// poison all subsequent checks. One probe avoids 4 redundant panics.
+	federationOK := doctor.ProbeDoltOpen(path)
 
-	// Check 8e: Federation peer connectivity
-	peerConnCheck := convertWithCategory(doctor.CheckFederationPeerConnectivity(path), doctor.CategoryFederation)
-	result.Checks = append(result.Checks, peerConnCheck)
+	if federationOK {
+		// Check 8d: Federation remotesapi port accessibility
+		remotesAPICheck := convertWithCategory(doctor.CheckFederationRemotesAPI(path), doctor.CategoryFederation)
+		result.Checks = append(result.Checks, remotesAPICheck)
+		// Don't fail overall for federation issues - they're only relevant for Dolt users
 
-	// Check 8f: Federation sync staleness
-	syncStalenessCheck := convertWithCategory(doctor.CheckFederationSyncStaleness(path), doctor.CategoryFederation)
-	result.Checks = append(result.Checks, syncStalenessCheck)
+		// Check 8e: Federation peer connectivity
+		peerConnCheck := convertWithCategory(doctor.CheckFederationPeerConnectivity(path), doctor.CategoryFederation)
+		result.Checks = append(result.Checks, peerConnCheck)
 
-	// Check 8g: Federation conflict detection
-	fedConflictsCheck := convertWithCategory(doctor.CheckFederationConflicts(path), doctor.CategoryFederation)
-	result.Checks = append(result.Checks, fedConflictsCheck)
-	if fedConflictsCheck.Status == statusError {
-		result.OverallOK = false // Unresolved conflicts are a real problem
+		// Check 8f: Federation sync staleness
+		syncStalenessCheck := convertWithCategory(doctor.CheckFederationSyncStaleness(path), doctor.CategoryFederation)
+		result.Checks = append(result.Checks, syncStalenessCheck)
+
+		// Check 8g: Federation conflict detection
+		fedConflictsCheck := convertWithCategory(doctor.CheckFederationConflicts(path), doctor.CategoryFederation)
+		result.Checks = append(result.Checks, fedConflictsCheck)
+		if fedConflictsCheck.Status == statusError {
+			result.OverallOK = false // Unresolved conflicts are a real problem
+		}
+
+		// Check 8h: Dolt init vs embedded mode mismatch
+		doltModeCheck := convertWithCategory(doctor.CheckDoltServerModeMismatch(path), doctor.CategoryFederation)
+		result.Checks = append(result.Checks, doltModeCheck)
+	} else {
+		result.Checks = append(result.Checks, doctorCheck{
+			Name:     "Federation",
+			Status:   statusWarning,
+			Message:  "Skipped (Dolt database cannot be opened)",
+			Detail:   "Federation checks require a working Dolt connection",
+			Category: doctor.CategoryFederation,
+		})
 	}
-
-	// Check 8h: Dolt init vs embedded mode mismatch
-	doltModeCheck := convertWithCategory(doctor.CheckDoltServerModeMismatch(path), doctor.CategoryFederation)
-	result.Checks = append(result.Checks, doltModeCheck)
 
 	// Check 9a: Sync divergence (JSONL/SQLite/git) - GH#885
 	syncDivergenceCheck := convertWithCategory(doctor.CheckSyncDivergence(path), doctor.CategoryData)
@@ -709,6 +738,11 @@ func runDiagnostics(path string) doctorResult {
 	classicArtifactsCheck := convertDoctorCheck(doctor.CheckClassicArtifacts(path))
 	result.Checks = append(result.Checks, classicArtifactsCheck)
 	// Don't fail overall check for classic artifacts, just warn
+
+	// Clean up any noms LOCK files left by diagnostic checks that opened
+	// (and panicked in) the embedded Dolt driver. Without this, bd doctor
+	// itself creates the lock files it then reports as problems.
+	releaseDiagnosticLocks(path)
 
 	return result
 }

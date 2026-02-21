@@ -2,6 +2,11 @@
 
 package doctor
 
+// ProbeDoltOpen returns false when CGO is not available (Dolt requires CGO).
+func ProbeDoltOpen(path string) bool {
+	return false
+}
+
 // CheckFederationRemotesAPI returns N/A when CGO is not available.
 func CheckFederationRemotesAPI(path string) DoctorCheck {
 	return DoctorCheck{

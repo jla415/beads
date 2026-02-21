@@ -25,6 +25,28 @@ func doltDatabaseName(beadsDir string) string {
 	return dbName
 }
 
+// ProbeDoltOpen attempts to open the Dolt database and immediately close it.
+// Returns true if successful, false if the database cannot be opened (e.g.
+// driver panic, corruption, stale locks). Used as a gate before federation
+// checks to avoid 4+ redundant panics that each leave noms LOCK files.
+func ProbeDoltOpen(path string) bool {
+	backend, beadsDir := getBackendAndBeadsDir(path)
+	if backend != configfile.BackendDolt {
+		return false // federation checks are Dolt-only
+	}
+	doltPath := filepath.Join(beadsDir, "dolt")
+	if _, err := os.Stat(doltPath); os.IsNotExist(err) {
+		return false
+	}
+	ctx := context.Background()
+	store, err := dolt.New(ctx, &dolt.Config{Path: doltPath, ReadOnly: true, Database: doltDatabaseName(beadsDir)})
+	if err != nil {
+		return false
+	}
+	_ = store.Close()
+	return true
+}
+
 // CheckFederationRemotesAPI checks if the remotesapi port is accessible for federation.
 // This is the port used for peer-to-peer sync operations.
 func CheckFederationRemotesAPI(path string) DoctorCheck {
