@@ -806,7 +806,24 @@ func (s *DoltStore) scanIssueIDs(ctx context.Context, rows *sql.Rows) ([]*types.
 	}
 
 	// Fetch all issues in a single batch query
-	return s.GetIssuesByIDs(ctx, ids)
+	issues, err := s.GetIssuesByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	// GetIssuesByIDs uses WHERE IN with no ORDER BY, so reorder
+	// results to match the caller's intended sort order.
+	issueMap := make(map[string]*types.Issue, len(issues))
+	for _, issue := range issues {
+		issueMap[issue.ID] = issue
+	}
+	ordered := make([]*types.Issue, 0, len(ids))
+	for _, id := range ids {
+		if issue, ok := issueMap[id]; ok {
+			ordered = append(ordered, issue)
+		}
+	}
+	return ordered, nil
 }
 
 // GetIssuesByIDs retrieves multiple issues by ID in a single query to avoid N+1 performance issues
