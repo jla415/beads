@@ -321,7 +321,7 @@ func applyFixList(path string, fixes []doctorCheck) {
 			err = doctor.FixStaleMQFiles(path)
 		case "Patrol Pollution":
 			err = fix.PatrolPollution(path)
-		case "Lock Files":
+		case "Lock Files", "Dolt Lock Health":
 			err = fix.StaleLockFiles(path)
 		case "Classic Artifacts":
 			err = fix.ClassicArtifacts(path)
