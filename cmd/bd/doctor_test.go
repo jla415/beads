@@ -1142,3 +1142,206 @@ func TestDoctor_ExplicitPathOverridesBEADS_DIR(t *testing.T) {
 		t.Error("Expected to find explicit-marker in chosen path - wrong directory was selected")
 	}
 }
+
+// TestReleaseDiagnosticLocks_RemovesNomsLOCK verifies that releaseDiagnosticLocks
+// removes noms LOCK files left by panicking Dolt opens during diagnostics.
+func TestReleaseDiagnosticLocks_RemovesNomsLOCK(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+
+	// Create dolt database directories with noms LOCK files
+	for _, dbName := range []string{"beads", "beads_tradebot"} {
+		nomsDir := filepath.Join(beadsDir, "dolt", dbName, ".dolt", "noms")
+		if err := os.MkdirAll(nomsDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		lockPath := filepath.Join(nomsDir, "LOCK")
+		if err := os.WriteFile(lockPath, []byte(""), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Write dolt backend config
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"),
+		[]byte(`{"backend":"dolt"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	releaseDiagnosticLocks(tmpDir)
+
+	// Verify LOCK files are removed
+	for _, dbName := range []string{"beads", "beads_tradebot"} {
+		lockPath := filepath.Join(beadsDir, "dolt", dbName, ".dolt", "noms", "LOCK")
+		if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+			t.Errorf("noms LOCK file should be removed for %s, but still exists", dbName)
+		}
+	}
+}
+
+// TestReleaseDiagnosticLocks_RemovesStaleDoltAccessLock verifies cleanup of
+// empty (stale) dolt-access.lock files in .beads/.
+func TestReleaseDiagnosticLocks_RemovesStaleDoltAccessLock(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	doltDir := filepath.Join(beadsDir, "dolt")
+	if err := os.MkdirAll(doltDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"),
+		[]byte(`{"backend":"dolt"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create empty dolt-access.lock (size 0 = stale, no flock holder)
+	accessLock := filepath.Join(beadsDir, "dolt-access.lock")
+	if err := os.WriteFile(accessLock, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	releaseDiagnosticLocks(tmpDir)
+
+	if _, err := os.Stat(accessLock); !os.IsNotExist(err) {
+		t.Error("empty dolt-access.lock should be removed by releaseDiagnosticLocks")
+	}
+}
+
+// TestReleaseDiagnosticLocks_PreservesNonEmptyAccessLock verifies that a
+// non-empty dolt-access.lock (potentially held by another process) is preserved.
+func TestReleaseDiagnosticLocks_PreservesNonEmptyAccessLock(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	doltDir := filepath.Join(beadsDir, "dolt")
+	if err := os.MkdirAll(doltDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"),
+		[]byte(`{"backend":"dolt"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create non-empty dolt-access.lock (non-zero size = potentially active)
+	accessLock := filepath.Join(beadsDir, "dolt-access.lock")
+	if err := os.WriteFile(accessLock, []byte("lock"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	releaseDiagnosticLocks(tmpDir)
+
+	if _, err := os.Stat(accessLock); os.IsNotExist(err) {
+		t.Error("non-empty dolt-access.lock should NOT be removed by releaseDiagnosticLocks")
+	}
+}
+
+// TestReleaseDiagnosticLocks_SkipsNoConfig verifies that lock cleanup
+// is a no-op when no config can be loaded (e.g., no .beads directory).
+func TestReleaseDiagnosticLocks_SkipsNoConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	// No .beads/ at all — releaseDiagnosticLocks should bail out gracefully.
+	releaseDiagnosticLocks(tmpDir)
+	// No panic = pass
+}
+
+// TestReleaseDiagnosticLocks_SkipsServerMode verifies that lock cleanup
+// is a no-op when Dolt is in server mode (locks belong to the sql-server).
+func TestReleaseDiagnosticLocks_SkipsServerMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	nomsDir := filepath.Join(beadsDir, "dolt", "beads", ".dolt", "noms")
+	if err := os.MkdirAll(nomsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"),
+		[]byte(`{"backend":"dolt"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	lockPath := filepath.Join(nomsDir, "LOCK")
+	if err := os.WriteFile(lockPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Activate server mode via env var
+	t.Setenv("BEADS_DOLT_SERVER_MODE", "1")
+
+	releaseDiagnosticLocks(tmpDir)
+
+	// Should NOT have removed the lock — server mode
+	if _, err := os.Stat(lockPath); os.IsNotExist(err) {
+		t.Error("noms LOCK should be preserved in server mode")
+	}
+}
+
+// TestDiagnostics_HasFederationChecks verifies that runDiagnostics produces
+// federation category checks. When ProbeDoltOpen succeeds (which it does
+// in test environments with a fresh database), all 5 individual checks run.
+// When ProbeDoltOpen fails (corrupted or locked database), a single "Federation:
+// Skipped" check is produced instead — but we can't easily reproduce that in
+// unit tests without a corrupted Dolt database.
+func TestDiagnostics_HasFederationChecks(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"),
+		[]byte(`{"backend":"dolt"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := runDiagnostics(tmpDir)
+
+	// Verify federation category checks exist in the result
+	var fedChecks int
+	for _, check := range result.Checks {
+		if check.Category == doctor.CategoryFederation {
+			fedChecks++
+		}
+	}
+
+	if fedChecks == 0 {
+		t.Error("Expected at least one federation check in diagnostics output")
+	}
+}
+
+// TestFederationGating_NoLeftoverLocks verifies that runDiagnostics does not
+// leave stale noms LOCK files behind after running. Earlier diagnostic checks
+// (database version, schema, integrity) open the embedded Dolt driver and may
+// panic, leaving noms LOCK files. releaseDiagnosticLocks() should clean them.
+func TestFederationGating_NoLeftoverLocks(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	doltDir := filepath.Join(beadsDir, "dolt")
+	// Create dolt dir structure so diagnostic checks attempt to open it.
+	nomsDir := filepath.Join(doltDir, "beads", ".dolt", "noms")
+	if err := os.MkdirAll(nomsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"),
+		[]byte(`{"backend":"dolt"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed a noms LOCK file (simulates what a panicking diagnostic check leaves).
+	lockPath := filepath.Join(nomsDir, "LOCK")
+	if err := os.WriteFile(lockPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = runDiagnostics(tmpDir)
+
+	// Verify no LOCK files remain after diagnostics
+	if _, err := os.Stat(lockPath); err == nil {
+		t.Error("noms LOCK file should not remain after runDiagnostics completes")
+	}
+
+	// Verify no stale (empty) dolt-access.lock remains
+	accessLock := filepath.Join(beadsDir, "dolt-access.lock")
+	if info, err := os.Stat(accessLock); err == nil && info.Size() == 0 {
+		t.Error("empty dolt-access.lock should not remain after runDiagnostics completes")
+	}
+}
