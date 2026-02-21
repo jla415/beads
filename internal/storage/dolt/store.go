@@ -295,7 +295,16 @@ func applyConfigDefaults(cfg *Config) {
 // New creates a new Dolt storage backend.
 // In server mode, connects to a running dolt sql-server via MySQL protocol (pure Go, no CGO).
 // In embedded mode, opens Dolt in-process (requires CGO).
-func New(ctx context.Context, cfg *Config) (*DoltStore, error) {
+// Recovers from panics in the Dolt driver (e.g., nil pointer in SetCrashOnFatalError
+// when the database is corrupt) and returns them as errors.
+func New(ctx context.Context, cfg *Config) (store *DoltStore, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			store = nil
+			err = fmt.Errorf("dolt driver panic: %v", r)
+		}
+	}()
+
 	if cfg.Path == "" {
 		return nil, fmt.Errorf("database path is required")
 	}
