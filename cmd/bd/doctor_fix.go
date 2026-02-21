@@ -205,6 +205,7 @@ func applyFixList(path string, fixes []doctorCheck) {
 	// permissions/lock cleanup → config sanity → DB integrity/migrations → DB↔JSONL sync.
 	order := []string{
 		"Lock Files",
+		"Dolt Lock Health",
 		"Permissions",
 		"Daemon Health",
 		"Database Config",
