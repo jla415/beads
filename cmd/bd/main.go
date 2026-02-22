@@ -347,12 +347,23 @@ var rootCmd = &cobra.Command{
 			"version",
 			"zsh",
 		}
+		// Subcommands under noDbCommands parents that still need db access.
+		// e.g., "bd dolt push" needs the store even though "dolt" is in noDbCommands.
+		dbRequiredSubcommands := map[string][]string{
+			"dolt": {"push", "pull", "commit"},
+		}
+
 		// Check both the command name and parent command name for subcommands
 		cmdName := cmd.Name()
 		if cmd.Parent() != nil {
 			parentName := cmd.Parent().Name()
 			if slices.Contains(noDbCommands, parentName) {
-				return
+				// Check if this specific subcommand needs db access
+				if subs, ok := dbRequiredSubcommands[parentName]; ok && slices.Contains(subs, cmdName) {
+					// Fall through to store initialization
+				} else {
+					return
+				}
 			}
 		}
 		if slices.Contains(noDbCommands, cmdName) {
