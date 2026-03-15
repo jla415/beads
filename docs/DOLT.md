@@ -278,6 +278,30 @@ dolt:
 | `DOLT_REMOTE_PASSWORD` | Push/pull auth password |
 | `BD_DOLT_AUTO_COMMIT` | Override auto-commit setting |
 
+### Project `.beads/.env`
+
+You can keep Dolt connection and auth settings in `.beads/.env` for a single
+project instead of exporting them in your shell profile.
+
+- `bd` reads `.beads/.env` from the resolved project `.beads` directory.
+- If `.beads/redirect` points at another shared `.beads` directory, `bd` reads
+  `.env` from that redirect target.
+- Shell and process environment variables still win over `.beads/.env`.
+- Only Dolt connection and auth variables are loaded. Unrelated `.env` keys are
+  ignored.
+- Keep `.beads/.env` untracked. `bd doctor` treats it as sensitive data.
+
+Example:
+
+```bash
+cat > .beads/.env <<'EOF'
+BEADS_DOLT_SERVER_HOST=127.0.0.1
+BEADS_DOLT_SERVER_PORT=3307
+BEADS_DOLT_SERVER_USER=root
+BEADS_DOLT_PASSWORD=secret
+EOF
+```
+
 ## Dolt Version Control
 
 Dolt maintains its own version history, separate from Git:

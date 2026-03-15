@@ -60,6 +60,7 @@ func ConfigPath(beadsDir string) string {
 }
 
 func Load(beadsDir string) (*Config, error) {
+	ApplyProjectEnv(beadsDir)
 	configPath := ConfigPath(beadsDir)
 
 	data, err := os.ReadFile(configPath) // #nosec G304 - controlled path from config

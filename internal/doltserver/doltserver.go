@@ -304,6 +304,8 @@ func ReadPortFile(beadsDir string) int {
 // the server is listening on. Consulting it here ensures that commands
 // connecting to an already-running server use the correct port.
 func DefaultConfig(beadsDir string) *Config {
+	configfile.ApplyProjectEnv(beadsDir)
+
 	// In shared mode, use the shared server directory for port resolution
 	if IsSharedServerMode() {
 		if sharedDir, err := SharedServerDir(); err == nil {
@@ -316,9 +318,14 @@ func DefaultConfig(beadsDir string) *Config {
 		Host:     "127.0.0.1",
 	}
 
-	// Check env var override first (used by tests and manual overrides)
-	if p := os.Getenv("BEADS_DOLT_SERVER_PORT"); p != "" {
-		if port, err := strconv.Atoi(p); err == nil {
+	// Check env var override first (used by tests and manual overrides).
+	// Accept the legacy BEADS_DOLT_PORT as a fallback.
+	envPort := os.Getenv("BEADS_DOLT_SERVER_PORT")
+	if envPort == "" {
+		envPort = os.Getenv("BEADS_DOLT_PORT")
+	}
+	if envPort != "" {
+		if port, err := strconv.Atoi(envPort); err == nil {
 			cfg.Port = port
 			return cfg
 		}

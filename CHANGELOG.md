@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Project-scoped `.beads/.env` for Dolt auth** — resolved project `.beads/.env` files can now supply Dolt connection and remote auth settings for server-backed commands, including `bd doctor`, while keeping shell environment variables as the higher-precedence override
+
 ## [0.60.0] - 2026-03-12
 
 ### Added

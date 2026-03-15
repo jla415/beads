@@ -62,6 +62,9 @@ dolt-server.port
 # Backup data (auto-exported JSONL, local-only)
 backup/
 
+# Per-project environment overrides
+.env
+
 # Legacy files (from pre-Dolt versions)
 *.db
 *.db?*
@@ -105,6 +108,7 @@ var requiredPatterns = []string{
 	"interactions.jsonl",
 	"*.lock",
 	"*.corrupt.backup/",
+	".env",
 }
 
 // CheckGitignore checks if .beads/.gitignore is up to date.

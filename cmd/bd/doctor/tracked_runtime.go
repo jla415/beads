@@ -65,6 +65,7 @@ var trackedRuntimeDirPrefixes = []string{
 var sensitiveFileNames = []string{
 	".beads-credential-key",
 	"credential-key",
+	".env",
 }
 
 // corruptBackupPattern matches corrupt backup directories created by
@@ -143,7 +144,7 @@ func CheckTrackedRuntimeFiles(repoPath string) DoctorCheck {
 	message := fmt.Sprintf("%d runtime/sensitive file(s) tracked by git", len(flagged))
 	if hasSensitive {
 		status = StatusError
-		message = fmt.Sprintf("%d tracked file(s) include sensitive data (credential key)", len(flagged))
+		message = fmt.Sprintf("%d tracked file(s) include sensitive data", len(flagged))
 	}
 
 	detail := strings.Join(flagged, ", ")

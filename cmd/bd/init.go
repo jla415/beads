@@ -219,6 +219,9 @@ environment variable.`,
 			}
 		}
 
+		// Load per-project Dolt env overrides before any direct BEADS_DOLT_* reads.
+		configfile.ApplyProjectEnv(beadsDirForInit)
+
 		// Determine storage path.
 		//
 		// Precedence: --db > BEADS_DIR > default (.beads/dolt)

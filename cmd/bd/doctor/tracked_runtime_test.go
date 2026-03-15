@@ -59,6 +59,7 @@ func TestShouldFlagTrackedFile(t *testing.T) {
 
 		// Sensitive files
 		{"credential key", ".beads-credential-key", true},
+		{"project env", ".env", true},
 		{"credential in backup", "dolt.20260312T135310Z.corrupt.backup/.beads-credential-key", true},
 
 		// Files that SHOULD be tracked (not flagged)

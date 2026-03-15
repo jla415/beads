@@ -300,6 +300,11 @@ dolt sql-server --host 127.0.0.1 --port 3307 --data-dir /path/to/your/dolt/data
 
 If you want auto-start behavior, remove `dolt_server_port` from `.beads/metadata.json`.
 
+If `bd doctor --server` or other server-backed commands still fail with auth or
+connection errors, check `.beads/.env` in the resolved project `.beads`
+directory. It can supply `BEADS_DOLT_*` and `DOLT_REMOTE_*` settings for that
+project, but shell environment variables override it.
+
 ### `database is locked`
 
 Another bd process is accessing the database. Solutions:

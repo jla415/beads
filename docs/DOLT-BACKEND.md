@@ -76,7 +76,7 @@ dolt:
 | `BEADS_DOLT_SERVER_HOST` | `127.0.0.1` | Server bind address |
 | `BEADS_DOLT_SERVER_PORT` | `3307` | Server port (MySQL protocol) |
 | `BEADS_DOLT_SERVER_USER` | `root` | MySQL username |
-| `BEADS_DOLT_SERVER_PASS` | (empty) | MySQL password |
+| `BEADS_DOLT_PASSWORD` | (empty) | MySQL password |
 | `BEADS_DOLT_SHARED_SERVER` | (empty) | Shared server mode: `1` or `true` to enable |
 
 ### Server Lifecycle
@@ -469,7 +469,7 @@ federation:
 | `BEADS_DOLT_SERVER_HOST` | Server host |
 | `BEADS_DOLT_SERVER_PORT` | Server port |
 | `BEADS_DOLT_SERVER_USER` | Server user |
-| `BEADS_DOLT_SERVER_PASS` | Server password |
+| `BEADS_DOLT_PASSWORD` | Server password |
 
 ## See Also
 

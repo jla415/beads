@@ -32,6 +32,50 @@ func skipIfNoDolt(t *testing.T) {
 	}
 }
 
+func unsetProjectEnvForTest(t *testing.T) {
+	t.Helper()
+
+	keys := []string{
+		"BEADS_DOLT_PASSWORD",
+		"BEADS_DOLT_PORT",
+		"BEADS_DOLT_REMOTESAPI_PORT",
+		"BEADS_DOLT_SERVER_DATABASE",
+		"BEADS_DOLT_SERVER_HOST",
+		"BEADS_DOLT_SERVER_MODE",
+		"BEADS_DOLT_SERVER_PORT",
+		"BEADS_DOLT_SERVER_TLS",
+		"BEADS_DOLT_SERVER_USER",
+		"DOLT_REMOTE_PASSWORD",
+		"DOLT_REMOTE_USER",
+	}
+
+	saved := make(map[string]*string, len(keys))
+	for _, key := range keys {
+		if value, ok := os.LookupEnv(key); ok {
+			copy := value
+			saved[key] = &copy
+		} else {
+			saved[key] = nil
+		}
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("Unsetenv(%s): %v", key, err)
+		}
+	}
+	configfile.ResetProjectEnvCacheForTesting()
+
+	t.Cleanup(func() {
+		configfile.ResetProjectEnvCacheForTesting()
+		for _, key := range keys {
+			value := saved[key]
+			if value == nil {
+				_ = os.Unsetenv(key)
+				continue
+			}
+			_ = os.Setenv(key, *value)
+		}
+	})
+}
+
 func TestInitCommand(t *testing.T) {
 	skipIfNoDolt(t)
 	tests := []struct {
@@ -1102,6 +1146,7 @@ func TestInitBEADS_DIR(t *testing.T) {
 		dbPath = ""
 		beads.ResetCaches()
 		git.ResetCaches()
+		unsetProjectEnvForTest(t)
 		initCmd.Flags().Set("prefix", "")
 		initCmd.Flags().Set("quiet", "false")
 		initCmd.Flags().Set("backend", "")
@@ -1411,6 +1456,7 @@ func TestInit_WithBEADS_DIR_DoltBackend(t *testing.T) {
 	origDBPath := dbPath
 	defer func() { dbPath = origDBPath }()
 	dbPath = ""
+	unsetProjectEnvForTest(t)
 
 	// Save and restore BEADS_DIR
 	origBeadsDir := os.Getenv("BEADS_DIR")
@@ -1994,7 +2040,73 @@ func TestBareParentWorktreeCoreCommandsWithoutRedirect(t *testing.T) {
 		t.Fatalf("bd list output did not include created issue:\n%s", listOut)
 	}
 }
+func TestInitHonorsProjectEnvForExistingServerDatabase(t *testing.T) {
+	skipIfNoDolt(t)
+	bd := buildBDForInitTests(t)
 
+	seedDir := t.TempDir()
+	seedDBPath := filepath.Join(seedDir, ".beads", "beads.db")
+	seedStore := newTestStoreIsolatedDB(t, seedDBPath, "initenv")
+	seedStore.Close()
+
+	seedCfg, err := configfile.Load(filepath.Join(seedDir, ".beads"))
+	if err != nil {
+		t.Fatalf("load seed metadata: %v", err)
+	}
+	if seedCfg == nil || seedCfg.DoltDatabase == "" {
+		t.Fatal("seed metadata missing dolt database")
+	}
+
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+
+	cfg := &configfile.Config{
+		Database:       "dolt",
+		Backend:        configfile.BackendDolt,
+		DoltMode:       configfile.DoltModeServer,
+		DoltServerHost: "127.0.0.1",
+		DoltDatabase:   "wrong_database",
+	}
+	if err := cfg.Save(beadsDir); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+
+	envFile := strings.Join([]string{
+		fmt.Sprintf("BEADS_DOLT_SERVER_PORT=%d", testDoltServerPort),
+		fmt.Sprintf("BEADS_DOLT_SERVER_DATABASE=%s", seedCfg.DoltDatabase),
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(beadsDir, ".env"), []byte(envFile), 0o600); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	cmd := exec.Command(bd, "init", "--quiet")
+	cmd.Dir = tmpDir
+	cmd.Env = filteredProjectEnvForSubprocess(os.Environ())
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected init to refuse re-initialization, got success\n%s", out)
+	}
+
+	outStr := string(out)
+	if !strings.Contains(outStr, "already initialized") && !strings.Contains(outStr, "Found existing Dolt database") {
+		t.Fatalf("expected existing database error, got:\n%s", outStr)
+	}
+}
+
+func filteredProjectEnvForSubprocess(env []string) []string {
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "BEADS_DOLT_") || strings.HasPrefix(entry, "DOLT_REMOTE_") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
 func TestInitBackendFlag(t *testing.T) {
 	bd := buildBDForInitTests(t)
 

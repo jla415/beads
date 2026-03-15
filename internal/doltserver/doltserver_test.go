@@ -248,6 +248,42 @@ func TestDefaultConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("project_env_port", func(t *testing.T) {
+		configfile.ResetProjectEnvCacheForTesting()
+		t.Cleanup(configfile.ResetProjectEnvCacheForTesting)
+		t.Setenv("GT_ROOT", "")
+		t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+		t.Setenv("BEADS_DOLT_PORT", "")
+
+		freshDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(freshDir, ".env"), []byte("BEADS_DOLT_SERVER_PORT=3410\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(.env): %v", err)
+		}
+
+		cfg := DefaultConfig(freshDir)
+		if cfg.Port != 3410 {
+			t.Errorf("expected port 3410 from .env, got %d", cfg.Port)
+		}
+	})
+
+	t.Run("project_env_legacy_port", func(t *testing.T) {
+		configfile.ResetProjectEnvCacheForTesting()
+		t.Cleanup(configfile.ResetProjectEnvCacheForTesting)
+		t.Setenv("GT_ROOT", "")
+		t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+		t.Setenv("BEADS_DOLT_PORT", "")
+
+		freshDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(freshDir, ".env"), []byte("BEADS_DOLT_PORT=3411\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(.env): %v", err)
+		}
+
+		cfg := DefaultConfig(freshDir)
+		if cfg.Port != 3411 {
+			t.Errorf("expected legacy port 3411 from .env, got %d", cfg.Port)
+		}
+	})
+
 	t.Run("config_yaml_port", func(t *testing.T) {
 		// When config.yaml sets dolt.port, DefaultConfig should use it
 		// (provided no env var or metadata.json port is set).

@@ -1396,6 +1396,12 @@ func TestGitignoreTemplate_ContainsRedirect(t *testing.T) {
 	}
 }
 
+func TestGitignoreTemplate_ContainsEnv(t *testing.T) {
+	if !strings.Contains(GitignoreTemplate, ".env") {
+		t.Error("GitignoreTemplate should contain '.env' pattern")
+	}
+}
+
 func TestRequiredPatterns_ContainsRedirect(t *testing.T) {
 	// Verify requiredPatterns includes redirect
 	found := false
@@ -1407,6 +1413,19 @@ func TestRequiredPatterns_ContainsRedirect(t *testing.T) {
 	}
 	if !found {
 		t.Error("requiredPatterns should include 'redirect'")
+	}
+}
+
+func TestRequiredPatterns_ContainsEnv(t *testing.T) {
+	found := false
+	for _, pattern := range requiredPatterns {
+		if pattern == ".env" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("requiredPatterns should include '.env'")
 	}
 }
 

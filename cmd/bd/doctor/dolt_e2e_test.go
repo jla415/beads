@@ -11,9 +11,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 
+	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/testutil"
 )
@@ -263,6 +265,69 @@ func runBDDoctor(t *testing.T, bdPath, path string) (e2eDoctorResult, string, er
 	}
 
 	return result, string(out), execErr
+}
+
+func TestE2E_DoctorServerHonorsProjectEnv(t *testing.T) {
+	if testSharedDB == "" {
+		t.Skip("shared Dolt test database not available")
+	}
+
+	bd := buildTestBD(t)
+	repoPath := setupMinimalGitRepo(t)
+	beadsDir := filepath.Join(repoPath, ".beads")
+
+	cfg := &configfile.Config{
+		Database:       "dolt",
+		Backend:        configfile.BackendDolt,
+		DoltMode:       configfile.DoltModeServer,
+		DoltServerHost: "127.0.0.1",
+		DoltDatabase:   "wrong_database",
+	}
+	if err := cfg.Save(beadsDir); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+
+	envFile := strings.Join([]string{
+		fmt.Sprintf("BEADS_DOLT_SERVER_PORT=%d", testutil.DoltContainerPortInt()),
+		fmt.Sprintf("BEADS_DOLT_SERVER_DATABASE=%s", testSharedDB),
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(beadsDir, ".env"), []byte(envFile), 0o600); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	cmd := exec.Command(bd, "doctor", repoPath, "--server", "--json")
+	cmd.Env = filteredProjectEnvSubprocess(os.Environ())
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("bd doctor --server --json failed: %v", err)
+	}
+
+	var result e2eDoctorResult
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("failed to parse doctor JSON output: %v\nraw output: %s", err, out)
+	}
+
+	if !result.OverallOK {
+		t.Fatalf("expected overall_ok=true, got false: %s", out)
+	}
+
+	for _, check := range result.Checks {
+		if check.Name == "Server port" && strings.Contains(check.Message, "No Dolt server port configured") {
+			t.Fatalf("expected .env to provide server port, got: %s", check.Message)
+		}
+	}
+}
+
+func filteredProjectEnvSubprocess(env []string) []string {
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "BEADS_DOLT_") || strings.HasPrefix(entry, "DOLT_REMOTE_") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 // TestE2E_DoctorSQLiteBackend was removed: SQLite backend no longer exists.
