@@ -316,3 +316,139 @@ func TestGetIssuesByIDsInTx_SmallInputLargeWispTable(t *testing.T) {
 		t.Fatalf("read tx: %v", err)
 	}
 }
+
+// TestExportHydrationHelpers_SmallInputLargeWispTable covers the bulk
+// hydration helpers used by `bd export`. These helpers must partition input IDs
+// with a scoped WispIDSetInTx query; falling back to per-ID IsActiveWispInTx
+// checks is correct but becomes painfully slow against remote Dolt servers.
+func TestExportHydrationHelpers_SmallInputLargeWispTable(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	blocker := &types.Issue{
+		ID:        "export-hydrate-blocker",
+		Title:     "blocker",
+		Status:    types.StatusOpen,
+		Priority:  2,
+		IssueType: types.TypeTask,
+	}
+	if err := store.CreateIssue(ctx, blocker, "tester"); err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+
+	perm := &types.Issue{
+		ID:        "export-hydrate-perm",
+		Title:     "perm",
+		Status:    types.StatusOpen,
+		Priority:  2,
+		IssueType: types.TypeTask,
+	}
+	if err := store.CreateIssue(ctx, perm, "tester"); err != nil {
+		t.Fatalf("create perm: %v", err)
+	}
+	if _, err := store.AddIssueComment(ctx, perm.ID, "tester", "perm comment"); err != nil {
+		t.Fatalf("add perm comment: %v", err)
+	}
+	if err := store.AddDependency(ctx, &types.Dependency{
+		IssueID:     perm.ID,
+		DependsOnID: blocker.ID,
+		Type:        types.DepBlocks,
+	}, "tester"); err != nil {
+		t.Fatalf("add perm dependency: %v", err)
+	}
+
+	target := &types.Issue{
+		Title:     "target wisp",
+		Status:    types.StatusOpen,
+		Priority:  2,
+		IssueType: types.TypeTask,
+		Ephemeral: true,
+	}
+	if err := store.CreateIssue(ctx, target, "tester"); err != nil {
+		t.Fatalf("create target wisp: %v", err)
+	}
+	if _, err := store.AddIssueComment(ctx, target.ID, "tester", "target comment"); err != nil {
+		t.Fatalf("add target comment: %v", err)
+	}
+	if err := store.AddDependency(ctx, &types.Dependency{
+		IssueID:     target.ID,
+		DependsOnID: blocker.ID,
+		Type:        types.DepBlocks,
+	}, "tester"); err != nil {
+		t.Fatalf("add target dependency: %v", err)
+	}
+
+	const noiseCount = 20
+	noiseIDs := make([]string, 0, noiseCount)
+	for i := 0; i < noiseCount; i++ {
+		iss := &types.Issue{
+			Title:     fmt.Sprintf("noise wisp %d", i),
+			Status:    types.StatusOpen,
+			Priority:  2,
+			IssueType: types.TypeTask,
+			Ephemeral: true,
+		}
+		if err := store.CreateIssue(ctx, iss, "tester"); err != nil {
+			t.Fatalf("create noise %d: %v", i, err)
+		}
+		if _, err := store.AddIssueComment(ctx, iss.ID, "tester", fmt.Sprintf("noise comment %d", i)); err != nil {
+			t.Fatalf("add noise comment %d: %v", i, err)
+		}
+		noiseIDs = append(noiseIDs, iss.ID)
+	}
+
+	input := []string{perm.ID, target.ID}
+
+	if err := store.withReadTx(ctx, func(tx *sql.Tx) error {
+		commentMap, err := issueops.GetCommentsForIssuesInTx(ctx, tx, input)
+		if err != nil {
+			return fmt.Errorf("GetCommentsForIssuesInTx: %w", err)
+		}
+		if got := len(commentMap[perm.ID]); got != 1 {
+			t.Errorf("perm comments: got %d, want 1", got)
+		}
+		if got := len(commentMap[target.ID]); got != 1 {
+			t.Errorf("target comments: got %d, want 1", got)
+		}
+
+		commentCounts, err := issueops.GetCommentCountsInTx(ctx, tx, input)
+		if err != nil {
+			return fmt.Errorf("GetCommentCountsInTx: %w", err)
+		}
+		if got := commentCounts[perm.ID]; got != 1 {
+			t.Errorf("perm comment count: got %d, want 1", got)
+		}
+		if got := commentCounts[target.ID]; got != 1 {
+			t.Errorf("target comment count: got %d, want 1", got)
+		}
+
+		depMap, err := issueops.GetDependencyRecordsForIssuesInTx(ctx, tx, input)
+		if err != nil {
+			return fmt.Errorf("GetDependencyRecordsForIssuesInTx: %w", err)
+		}
+		if got := len(depMap[perm.ID]); got != 1 {
+			t.Errorf("perm dependencies: got %d, want 1", got)
+		}
+		if got := len(depMap[target.ID]); got != 1 {
+			t.Errorf("target dependencies: got %d, want 1", got)
+		}
+
+		for _, n := range noiseIDs {
+			if _, leaked := commentMap[n]; leaked {
+				t.Errorf("comments leaked noise wisp %q", n)
+			}
+			if _, leaked := commentCounts[n]; leaked {
+				t.Errorf("comment counts leaked noise wisp %q", n)
+			}
+			if _, leaked := depMap[n]; leaked {
+				t.Errorf("dependencies leaked noise wisp %q", n)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read tx: %v", err)
+	}
+}

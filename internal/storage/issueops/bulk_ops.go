@@ -109,15 +109,14 @@ func GetCommentsForIssuesInTx(ctx context.Context, tx *sql.Tx, issueIDs []string
 
 	result := make(map[string][]*types.Comment)
 
-	// Partition IDs by wisp status.
-	var wispIDs, permIDs []string
-	for _, id := range issueIDs {
-		if IsActiveWispInTx(ctx, tx, id) {
-			wispIDs = append(wispIDs, id)
-		} else {
-			permIDs = append(permIDs, id)
-		}
+	// Partition IDs by wisp status with one scoped query instead of one
+	// existence query per ID. This path is used by export and can receive
+	// thousands of IDs against a remote Dolt server.
+	wispSet, err := WispIDSetInTx(ctx, tx, issueIDs)
+	if err != nil {
+		return nil, fmt.Errorf("get comments for issues: build wisp set: %w", err)
 	}
+	wispIDs, permIDs := partitionByWispSet(issueIDs, wispSet)
 
 	if len(permIDs) > 0 {
 		if err := getCommentsForIDsInto(ctx, tx, "comments", permIDs, result); err != nil {

@@ -53,14 +53,11 @@ func GetCommentCountsInTx(ctx context.Context, tx *sql.Tx, issueIDs []string) (m
 
 	result := make(map[string]int)
 
-	var wispIDs, permIDs []string
-	for _, id := range issueIDs {
-		if IsActiveWispInTx(ctx, tx, id) {
-			wispIDs = append(wispIDs, id)
-		} else {
-			permIDs = append(permIDs, id)
-		}
+	wispSet, err := WispIDSetInTx(ctx, tx, issueIDs)
+	if err != nil {
+		return nil, fmt.Errorf("get comment counts: build wisp set: %w", err)
 	}
+	wispIDs, permIDs := partitionByWispSet(issueIDs, wispSet)
 
 	for _, pair := range []struct {
 		table string

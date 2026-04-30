@@ -113,6 +113,9 @@ func TestResolveWhereBeadsDir_ReturnsEmptyWithoutWorkspace(t *testing.T) {
 }
 
 func TestResolveWhereBeadsDir_UsesInitializedDBPath(t *testing.T) {
+	saveAndRestoreGlobals(t)
+	ensureCleanGlobalState(t)
+
 	originalDBPath := dbPath
 	originalCmdCtx := cmdCtx
 	defer func() {
@@ -150,6 +153,9 @@ func TestResolveWhereBeadsDir_UsesInitializedDBPath(t *testing.T) {
 	})
 
 	dbPath = dbDir
+	t.Setenv("BEADS_DIR", "")
+	t.Setenv("BEADS_DB", dbDir)
+	t.Setenv("BD_DB", "")
 
 	if got := resolveWhereBeadsDir(nil); !utils.PathsEqual(got, beadsDir) {
 		t.Fatalf("resolveWhereBeadsDir(nil) = %q, want %q", got, beadsDir)
